@@ -72,7 +72,7 @@ setting is optional:
 | `formats`       | `["mcworld", "zip", "mcaddon"]` | Which artifacts to emit. |
 | `bpName`        | behavior pack folder name        | Folder name used for the BP inside archives. |
 | `rpName`        | resource pack folder name        | Folder name used for the RP inside archives. |
-| `projectDirs`   | `["Marketing Art", "Store Art"]`| Extra top-level folders added to the `project` bundle (missing ones are skipped). |
+| `projectDirs`   | `["Marketing Art", "Store Art"]`| Extra top-level folders added to the `project` bundle (missing ones are skipped). Each entry is either a string (path relative to the project root, also used as the in-zip folder name) or `{"src": "...", "dest": "..."}` to read from one path but place it under another — e.g. `{"src": "pack/Store Art", "dest": "Store Art"}` keeps the art under `pack/` while landing it at the bundle's top level. `dest` defaults to the basename of `src`. |
 | `template`      | bundled `template.mcworld`       | Path to the template world used for `mcworld`, relative to the project root. |
 | `worldName`     | versioned file name              | `LevelName` written into the `.mcworld`. |
 | `randomizeSeed` | `true`                          | Randomize the world seed when building the `.mcworld`. |

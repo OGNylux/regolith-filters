@@ -243,6 +243,22 @@ def build_addon_zip():
     return buffer.getvalue()
 
 
+def project_dir_entry(entry):
+    """Normalize a projectDirs entry to ``(src_rel, arc_name)``.
+
+    Accepts a plain string (used as both the source path, relative to the
+    project root, and the in-zip folder name) or an object
+    ``{"src": ..., "dest": ...}``. The object form lets art that lives outside
+    the bundle's top level (e.g. kept under ``pack/``) be placed at the root of
+    the project archive: ``{"src": "pack/Store Art", "dest": "Store Art"}``.
+    When ``dest`` is omitted it defaults to the basename of ``src``."""
+    if isinstance(entry, dict):
+        src_rel = entry.get("src", "")
+        arc = entry.get("dest") or os.path.basename(src_rel.rstrip("/\\"))
+        return src_rel, arc
+    return entry, entry
+
+
 def build_project_zip():
     """Build the full project archive: built Content (BP + RP) plus the
     Marketing Art / Store Art folders, for marketplace submission."""
@@ -250,12 +266,13 @@ def build_project_zip():
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         add_dir(zf, BP_SRC, f"Content/behavior_packs/{BP_NAME}", PACK_TRANSFORM)
         add_dir(zf, RP_SRC, f"Content/resource_packs/{RP_NAME}", PACK_TRANSFORM)
-        for rel in PROJECT_DIRS:
-            src = os.path.join(ROOT_DIR, rel)
-            if os.path.isdir(src):
-                add_dir(zf, src, rel)
+        for entry in PROJECT_DIRS:
+            src_rel, arc = project_dir_entry(entry)
+            src = os.path.join(ROOT_DIR, src_rel) if src_rel else ""
+            if src and os.path.isdir(src):
+                add_dir(zf, src, arc)
             else:
-                print(f"[export_addon] skipping missing folder: {rel}")
+                print(f"[export_addon] skipping missing folder: {src_rel or entry}")
     return buffer.getvalue()
 
 
