@@ -276,18 +276,38 @@ def build_project_zip():
     return buffer.getvalue()
 
 
+def _level_dat_nbt_start(raw):
+    """Offset of the NBT payload inside a Bedrock ``level.dat``.
+
+    The file normally starts with an 8-byte header (storage-version int +
+    payload-length int). It can't be sniffed by the first byte alone: the
+    storage version is commonly 10, whose low byte (``0x0a``) collides with the
+    NBT ``TAG_Compound`` id, so a first-byte check misfires and parses the
+    header as NBT (yielding an empty compound). Trust the header only when its
+    declared length matches the remaining bytes."""
+    if len(raw) >= HEADER_SIZE:
+        declared = struct.unpack_from("<i", raw, 4)[0]
+        if declared == len(raw) - HEADER_SIZE:
+            return HEADER_SIZE
+    return 0
+
+
 def patch_level_dat(raw, world_name):
     """Best-effort: set LevelName and (optionally) randomize the seed.
 
     Uses amulet-nbt if available; otherwise returns the data unchanged (the
-    world name is still applied via levelname.txt)."""
+    world name is still applied via levelname.txt). All other tags in the
+    template's level.dat (notably ``lastOpenedWithVersion``, which gates
+    features like custom biomes) are preserved untouched."""
     try:
         import amulet_nbt
     except ImportError:
         print("[export_addon] amulet-nbt unavailable; leaving level.dat as-is")
         return raw
 
-    nbt_start = 0 if raw[:1] == b"\x0a" else HEADER_SIZE
+    nbt_start = _level_dat_nbt_start(raw)
+    # Preserve the template's storage-version header rather than forcing one.
+    storage_version = struct.unpack_from("<i", raw, 0)[0] if nbt_start == HEADER_SIZE else 9
     named_tag = amulet_nbt.load(raw[nbt_start:], compressed=False, little_endian=True)
     tag = named_tag.compound
 
@@ -296,7 +316,7 @@ def patch_level_dat(raw, world_name):
         tag["RandomSeed"] = amulet_nbt.LongTag(random.getrandbits(64) - (1 << 63))
 
     payload = named_tag.save_to(compressed=False, little_endian=True)
-    header = struct.pack("<ii", 9, len(payload))
+    header = struct.pack("<ii", storage_version, len(payload))
     return header + payload
 
 
