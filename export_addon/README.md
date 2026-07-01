@@ -12,7 +12,7 @@ freshly compiled behavior and resource packs, and writes the output files to
 | `zip`     | `<name>.zip`          | The behavior + resource pack, each in its own folder. |
 | `mcaddon` | `<name>.mcaddon`      | A byte-for-byte copy of `<name>.zip`, just renamed — double-click to import. |
 | `mcworld` | `<name>.mcworld`      | A world (from a bundled template) with both packs installed and registered. |
-| `project` | `<name> Project.zip`  | Full marketplace-submission bundle: `Content/{behavior,resource}_packs` plus the `Marketing Art` and `Store Art` folders. |
+| `package` | `<name> Package.zip`  | Full marketplace-submission bundle: `Content/{behavior,resource}_packs` plus the `Marketing Art` and `Store Art` folders. |
 
 `<name>` defaults to the project `name` in `config.json` (e.g. `Magic Spells`).
 
@@ -59,8 +59,10 @@ setting is optional:
     "filter": "export_addon",
     "settings": {
         "outputDir": "dist",
-        "randomizeSeed": true,
-        "formats": ["mcworld", "zip", "mcaddon", "project"]
+        "obfuscateJson": true,
+        "obfuscateScripts": true,
+        "obfuscatorArgs": [],
+        "formats": ["package", "mcaddon", "zip", "mcworld"]
     }
 }
 ```
@@ -69,21 +71,24 @@ setting is optional:
 |-----------------|----------------------------------|-------------|
 | `name`          | `config.json` → `name`           | Base file name for the artifacts. |
 | `outputDir`     | `"dist"`                         | Output folder, relative to the project root. |
-| `formats`       | `["mcworld", "zip", "mcaddon"]` | Which artifacts to emit. |
+| `formats`       | `["mcworld", "zip", "mcaddon"]` | Which artifacts to emit: `package`, `mcaddon`, `zip`, `mcworld`. |
+| `obfuscateJson` | `false`                          | Minify JSON files (strip whitespace + comments). |
+| `obfuscateScripts` | `false`                       | Obfuscate `.js` files with `javascript-obfuscator` (needs Node). |
+| `obfuscatorArgs` | conservative MC-safe set        | CLI args passed to `javascript-obfuscator`. |
+| `marketingArt`  | `"Marketing Art"`                | Source folder (rel to root) placed into `Marketing Art` in the `package`. Missing → skipped. |
+| `storeArt`      | `"Store Art"`                    | Source folder (rel to root) placed into `Store Art` in the `package`. Missing → skipped. |
 | `bpName`        | behavior pack folder name        | Folder name used for the BP inside archives. |
 | `rpName`        | resource pack folder name        | Folder name used for the RP inside archives. |
-| `projectDirs`   | `["Marketing Art", "Store Art"]`| Extra top-level folders added to the `project` bundle (missing ones are skipped). Each entry is either a string (path relative to the project root, also used as the in-zip folder name) or `{"src": "...", "dest": "..."}` to read from one path but place it under another — e.g. `{"src": "pack/Store Art", "dest": "Store Art"}` keeps the art under `pack/` while landing it at the bundle's top level. `dest` defaults to the basename of `src`. |
 | `template`      | bundled `template.mcworld`       | Path to the template world used for `mcworld`, relative to the project root. |
 | `worldName`     | versioned file name              | `LevelName` written into the `.mcworld`. |
 | `randomizeSeed` | `true`                          | Randomize the world seed when building the `.mcworld`. |
 | `appendVersion` | `true`                          | Append the version to the artifact file names (and default world name). |
-| `version`       | BP manifest version              | Version string to use. Defaults to the behavior pack's `header.version`. |
+| `version`       | BP manifest version              | Static version string to pin. Defaults to the behavior pack's `header.version`. |
+| `autoVersion`   | `false`                          | Auto-increment the version on every run (see [Versioning](#versioning)). |
+| `versionFile`   | `".export_version.json"`         | Where the auto-incrementing version is stored (relative to root). |
+| `versionSubfolder` | `true`                        | Write each version's artifacts into its own `dist/<version>/` subfolder. |
 | `versionPrefix` | `""`                            | Text placed before the version, e.g. `"v"` → `Magic Spells v1.1.9.mcworld`. |
-| `obfuscate`     | `false`                         | Master toggle: turns on both JSON and script obfuscation. |
-| `obfuscateJson` | value of `obfuscate`             | Minify JSON files (strip whitespace + comments). |
-| `obfuscateScripts` | value of `obfuscate`          | Obfuscate `.js` files with `javascript-obfuscator` (needs Node). |
 | `obfuscatorVersion` | `"4"`                       | `javascript-obfuscator` version run via `npx`. |
-| `obfuscatorArgs` | conservative MC-safe set        | CLI args passed to `javascript-obfuscator`. |
 
 ### Versioning
 
@@ -91,22 +96,46 @@ With `appendVersion` on (the default), the version is read from the behavior
 pack's `manifest.json` (`header.version`) and appended to every artifact:
 
 ```
-Magic Spells 1.1.9.mcworld
-Magic Spells 1.1.9.zip
-Magic Spells 1.1.9.mcaddon
-Magic Spells 1.1.9 Project.zip
+dist/1.1.9/Magic Spells 1.1.9.mcworld
+dist/1.1.9/Magic Spells 1.1.9.zip
+dist/1.1.9/Magic Spells 1.1.9.mcaddon
+dist/1.1.9/Magic Spells 1.1.9 Package.zip
 ```
+
+Each version's artifacts land in their own `dist/<version>/` subfolder so builds
+don't overwrite each other. Set `"versionSubfolder": false` to write them flat
+into `dist/` instead.
 
 Set `"versionPrefix": "v"` for `Magic Spells v1.1.9.…`, override the detected
 value with `"version": "2.0.0-beta"`, or disable stamping with
 `"appendVersion": false`.
 
+The version is resolved in this priority order:
+
+1. **Static pin** — the `version` setting.
+2. **Auto-increment** — `autoVersion` (below).
+3. **Manifest** — the behavior pack's `header.version` (the default).
+
+#### Auto-incrementing version
+
+Set `"autoVersion": true` and the version's last numeric segment is bumped on
+every run (`0.0.1 → 0.0.2 → 0.0.3 …`):
+
+```jsonc
+{ "filter": "export_addon", "settings": { "autoVersion": true } }
+```
+
+The current value is stored in `.export_version.json` at the project root (path
+configurable via `versionFile`); commit it so the counter is shared across
+machines/CI. The first run seeds it from the `version` setting if present,
+otherwise from the BP manifest. To reset or jump to a specific number, edit that
+file (or set `version` for one run).
+
 ### Obfuscation
 
-Enable with `"obfuscate": true` (or toggle `obfuscateJson` / `obfuscateScripts`
-individually). Obfuscation is applied **only to the bytes written into the
-distributed artifacts** — your `com.mojang` dev install stays readable and
-debuggable.
+Enable with `"obfuscateJson": true` and/or `"obfuscateScripts": true`.
+Obfuscation is applied **only to the bytes written into the distributed
+artifacts** — your `com.mojang` dev install stays readable and debuggable.
 
 - **JSON** is minified (whitespace and `//` / `/* */` comments removed). Files
   that can't be parsed are shipped untouched. Key names are kept (the game
@@ -121,7 +150,7 @@ debuggable.
 ```jsonc
 {
     "filter": "export_addon",
-    "settings": { "obfuscate": true }
+    "settings": { "obfuscateJson": true, "obfuscateScripts": true }
 }
 ```
 
@@ -137,8 +166,10 @@ debuggable.
   copies the packs into `behavior_packs/` and `resource_packs/`, and regenerates
   `world_behavior_packs.json` / `world_resource_packs.json` from the live manifest
   UUIDs and versions.
-- `project` rebuilds the `Content/` tree from the built packs and appends the art
-  folders for marketplace submission.
+- `package` rebuilds the `Content/` tree from the built packs and appends the art
+  folders for marketplace submission. The destinations are always `Marketing Art`
+  and `Store Art`; only the *source* folders are configurable (`marketingArt` /
+  `storeArt`).
 
 ## Dependencies
 

@@ -1,4 +1,4 @@
-"""Regolith filter: export the built addon as .mcworld, .zip and .mcaddon.
+"""Regolith filter: export the built addon as .mcworld, .zip, .mcaddon and package.
 
 Runs after the build, from inside ``.regolith/tmp`` (which contains ``BP/``,
 ``RP/`` and ``data/``). It reads the freshly built packs and writes the
@@ -7,27 +7,33 @@ packaged artifacts to ``<ROOT_DIR>/<outputDir>``.
     zip       -> "<name>.zip": the behavior + resource pack (each in its own folder)
     mcaddon   -> "<name>.mcaddon": a byte-for-byte copy of the .zip, just renamed
     mcworld   -> "<name>.mcworld": a world (from a template) with the packs installed
-    project   -> "<name> Project.zip": the full project for marketplace submission
+    package   -> "<name> Package.zip": the full marketplace-submission bundle
                  (Content/{behavior,resource}_packs + Marketing Art + Store Art)
 
 Settings (all optional, passed as a JSON string argument by Regolith):
-    name          base file name              (default: config.json "name")
-    outputDir     output folder (rel to root) (default: "dist")
-    bpName        BP folder name in archives  (default: config pack folder name)
-    rpName        RP folder name in archives  (default: config pack folder name)
-    formats       list of formats to emit     (default: mcworld, zip, mcaddon)
-    projectDirs   extra folders for "project" (default: Marketing Art, Store Art)
-    template      path to template .mcworld   (default: bundled template)
-    worldName     LevelName for the .mcworld  (default: versioned file name)
-    randomizeSeed randomize the world seed    (default: True)
-    appendVersion append the version to names (default: True)
-    version       version string to use       (default: BP manifest version)
-    versionPrefix text before the version     (default: "", e.g. "v")
-    obfuscate        master toggle for both    (default: False)
-    obfuscateJson    minify JSON in artifacts  (default: obfuscate)
-    obfuscateScripts obfuscate JS in artifacts (default: obfuscate; needs Node)
-    obfuscatorVersion javascript-obfuscator ver (default: "4")
-    obfuscatorArgs   extra obfuscator CLI args (default: MC-safe conservative set)
+    name             base file name                (default: config.json "name")
+    outputDir        output folder (rel to root)   (default: "dist")
+    formats          list of formats to emit       (default: mcworld, zip, mcaddon)
+    obfuscateJson    minify JSON in artifacts      (default: False)
+    obfuscateScripts obfuscate JS in artifacts     (default: False; needs Node)
+    obfuscatorArgs   extra obfuscator CLI args     (default: MC-safe conservative set)
+    marketingArt     source folder -> "Marketing Art" in package  (default: "Marketing Art")
+    storeArt         source folder -> "Store Art" in package      (default: "Store Art")
+    bpName           BP folder name in archives    (default: config pack folder name)
+    rpName           RP folder name in archives    (default: config pack folder name)
+    template         path to template .mcworld     (default: bundled template)
+    worldName        LevelName for the .mcworld    (default: versioned file name)
+    randomizeSeed    randomize the world seed      (default: True)
+    appendVersion    append the version to names   (default: True)
+    version          static version string to pin  (default: BP manifest version)
+    autoVersion      auto-increment each run        (default: False)
+    versionFile      where the auto version is kept (default: ".export_version.json")
+    versionSubfolder artifacts go in dist/<version> (default: True)
+    versionPrefix    text before the version       (default: "", e.g. "v")
+    obfuscatorVersion javascript-obfuscator ver    (default: "4")
+
+Version resolution (highest priority first): the static `version` setting,
+autoVersion (bump the stored version), then the BP manifest version.
 
 Obfuscation is applied only to the bytes written into the artifacts; the build
 output exported to com.mojang is left readable.
@@ -75,10 +81,9 @@ def pack_folder_name(key, default):
 
 NAME = settings.get("name") or CONFIG.get("name") or "addon"
 OUTPUT_DIR = os.path.join(ROOT_DIR, settings.get("outputDir", "dist"))
+FORMATS = settings.get("formats", ["mcworld", "zip", "mcaddon"])
 BP_NAME = settings.get("bpName") or pack_folder_name("behaviorPack", "BP")
 RP_NAME = settings.get("rpName") or pack_folder_name("resourcePack", "RP")
-FORMATS = settings.get("formats", ["mcworld", "zip", "mcaddon"])
-PROJECT_DIRS = settings.get("projectDirs", ["Marketing Art", "Store Art"])
 TEMPLATE = (
     os.path.join(ROOT_DIR, settings["template"])
     if settings.get("template")
@@ -88,12 +93,25 @@ RANDOMIZE_SEED = settings.get("randomizeSeed", True)
 APPEND_VERSION = settings.get("appendVersion", True)
 VERSION_OVERRIDE = settings.get("version")
 VERSION_PREFIX = settings.get("versionPrefix", "")
+# Auto-increment: bump a stored version each run. Persisted to a small JSON file
+# at the project root so it survives across runs (commit it to share/CI).
+AUTO_VERSION = settings.get("autoVersion", False)
+VERSION_FILE = os.path.join(ROOT_DIR, settings.get("versionFile", ".export_version.json"))
+# Write each version's artifacts into its own subfolder of outputDir.
+VERSION_SUBFOLDER = settings.get("versionSubfolder", True)
+
+# The "package" bundle always uses the fixed marketplace folder names as the
+# destination; only the *source* folder is configurable (it may be named
+# differently, or live in a subfolder). Missing sources are skipped.
+PACKAGE_ART = [
+    (settings.get("marketingArt", "Marketing Art"), "Marketing Art"),
+    (settings.get("storeArt", "Store Art"), "Store Art"),
+]
 
 # Obfuscation only affects the bytes written into the distributed artifacts; the
 # build output exported to com.mojang is left untouched.
-_OBFUSCATE = settings.get("obfuscate", False)
-OBFUSCATE_JSON = settings.get("obfuscateJson", _OBFUSCATE)
-OBFUSCATE_SCRIPTS = settings.get("obfuscateScripts", _OBFUSCATE)
+OBFUSCATE_JSON = settings.get("obfuscateJson", False)
+OBFUSCATE_SCRIPTS = settings.get("obfuscateScripts", False)
 OBFUSCATOR_VERSION = settings.get("obfuscatorVersion", "4")
 # Conservative options that keep Minecraft's QuickJS runtime happy.
 OBFUSCATOR_ARGS = settings.get(
@@ -121,6 +139,57 @@ def read_manifest(pack_dir):
 
 def version_string(version):
     return ".".join(str(v) for v in version) if isinstance(version, list) else str(version)
+
+
+def bump_version(v):
+    """Increment the last numeric segment of a dotted version, e.g. 1.1.9 -> 1.1.10."""
+    parts = v.split(".")
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].isdigit():
+            parts[i] = str(int(parts[i]) + 1)
+            return ".".join(parts)
+    return v  # nothing numeric to bump; leave unchanged
+
+
+def read_stored_version():
+    """The last version written to VERSION_FILE, or None if absent/unreadable."""
+    try:
+        with open(VERSION_FILE, encoding="utf-8") as fh:
+            return json.load(fh).get("version")
+    except (OSError, ValueError):
+        return None
+
+
+def write_stored_version(v):
+    with open(VERSION_FILE, "w", encoding="utf-8") as fh:
+        json.dump({"version": v}, fh, indent=2)
+
+
+def resolve_version(bp_info):
+    """Work out the artifact version and where it came from, in priority order:
+
+      1. static `version` setting
+      2. autoVersion: bump the stored version each run (first run seeds from the
+         manifest, or from `version` if you set one)
+      3. the behavior pack manifest version (the original default)
+    """
+    manifest_version = version_string(bp_info["version"])
+
+    if VERSION_OVERRIDE:
+        return VERSION_OVERRIDE, "version setting"
+
+    if AUTO_VERSION:
+        stored = read_stored_version()
+        if stored:
+            new = bump_version(stored)
+            note = f"auto (bumped from {stored})"
+        else:
+            new = manifest_version
+            note = "auto (seeded)"
+        write_stored_version(new)
+        return new, note
+
+    return manifest_version, "manifest"
 
 
 def add_dir(zf, src_dir, arc_prefix, transform=None):
@@ -243,36 +312,19 @@ def build_addon_zip():
     return buffer.getvalue()
 
 
-def project_dir_entry(entry):
-    """Normalize a projectDirs entry to ``(src_rel, arc_name)``.
-
-    Accepts a plain string (used as both the source path, relative to the
-    project root, and the in-zip folder name) or an object
-    ``{"src": ..., "dest": ...}``. The object form lets art that lives outside
-    the bundle's top level (e.g. kept under ``pack/``) be placed at the root of
-    the project archive: ``{"src": "pack/Store Art", "dest": "Store Art"}``.
-    When ``dest`` is omitted it defaults to the basename of ``src``."""
-    if isinstance(entry, dict):
-        src_rel = entry.get("src", "")
-        arc = entry.get("dest") or os.path.basename(src_rel.rstrip("/\\"))
-        return src_rel, arc
-    return entry, entry
-
-
-def build_project_zip():
-    """Build the full project archive: built Content (BP + RP) plus the
-    Marketing Art / Store Art folders, for marketplace submission."""
+def build_package_zip():
+    """Build the full marketplace-submission archive: built Content (BP + RP)
+    plus the Marketing Art / Store Art folders."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         add_dir(zf, BP_SRC, f"Content/behavior_packs/{BP_NAME}", PACK_TRANSFORM)
         add_dir(zf, RP_SRC, f"Content/resource_packs/{RP_NAME}", PACK_TRANSFORM)
-        for entry in PROJECT_DIRS:
-            src_rel, arc = project_dir_entry(entry)
-            src = os.path.join(ROOT_DIR, src_rel) if src_rel else ""
-            if src and os.path.isdir(src):
-                add_dir(zf, src, arc)
+        for src_rel, dest in PACKAGE_ART:
+            src = os.path.join(ROOT_DIR, src_rel)
+            if os.path.isdir(src):
+                add_dir(zf, src, dest)
             else:
-                print(f"[export_addon] skipping missing folder: {src_rel or entry}")
+                print(f"[export_addon] skipping missing art folder: {src_rel} -> {dest}")
     return buffer.getvalue()
 
 
@@ -372,8 +424,7 @@ def main():
     bp_info = read_manifest(BP_SRC)
     rp_info = read_manifest(RP_SRC)
 
-    # Version is taken from the BP manifest header (overridable via settings).
-    version = VERSION_OVERRIDE or version_string(bp_info["version"])
+    version, version_source = resolve_version(bp_info)
     stem = f"{NAME} {VERSION_PREFIX}{version}" if APPEND_VERSION else NAME
     world_name = settings.get("worldName", stem)
 
@@ -385,36 +436,39 @@ def main():
     if obfuscating:
         print(f"[export_addon] obfuscating {' + '.join(obfuscating)}")
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Each version's artifacts go in their own subfolder of the output dir,
+    # e.g. dist/1.1.9/... (disable with "versionSubfolder": false).
+    out_dir = os.path.join(OUTPUT_DIR, f"{VERSION_PREFIX}{version}") if VERSION_SUBFOLDER else OUTPUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
     outputs = []
 
     if "zip" in FORMATS or "mcaddon" in FORMATS:
         addon_bytes = build_addon_zip()
         if "zip" in FORMATS:
-            path = os.path.join(OUTPUT_DIR, f"{stem}.zip")
+            path = os.path.join(out_dir, f"{stem}.zip")
             with open(path, "wb") as fh:
                 fh.write(addon_bytes)
             outputs.append(path)
         if "mcaddon" in FORMATS:
-            path = os.path.join(OUTPUT_DIR, f"{stem}.mcaddon")
+            path = os.path.join(out_dir, f"{stem}.mcaddon")
             with open(path, "wb") as fh:
                 fh.write(addon_bytes)
             outputs.append(path)
 
     if "mcworld" in FORMATS:
-        path = os.path.join(OUTPUT_DIR, f"{stem}.mcworld")
+        path = os.path.join(out_dir, f"{stem}.mcworld")
         with open(path, "wb") as fh:
             fh.write(build_world(bp_info, rp_info, world_name))
         outputs.append(path)
 
-    if "project" in FORMATS:
-        path = os.path.join(OUTPUT_DIR, f"{stem} Project.zip")
+    if "package" in FORMATS:
+        path = os.path.join(out_dir, f"{stem} Package.zip")
         with open(path, "wb") as fh:
-            fh.write(build_project_zip())
+            fh.write(build_package_zip())
         outputs.append(path)
 
     print(
-        f"[export_addon] {NAME} {version} "
+        f"[export_addon] {NAME} {version} [{version_source}] "
         f"(BP {version_string(bp_info['version'])} / RP {version_string(rp_info['version'])})"
     )
     for out in outputs:
