@@ -5,9 +5,13 @@ import os
 
 # Top-level pack folders whose JSON is loaded by scanning + reading identifiers,
 # so the filename/subfolder is irrelevant to the game and may be flattened.
+# NOTE: features, feature_rules, and biomes are deliberately NOT here -- their
+# registries require the filename stem to equal the identifier's name part
+# (e.g. cyd_ab:foo_feature_rule -> foo_feature_rule.json), so a hashed filename
+# is rejected ("identifier does not match filename"). They keep their names.
 CONTENT_LOADED_DIRS = {
-    "animations", "animation_controllers", "blocks", "biomes", "entities",
-    "entity", "features", "feature_rules", "items", "recipes", "spawn_rules",
+    "animations", "animation_controllers", "blocks", "entities",
+    "entity", "items", "recipes", "spawn_rules",
     "particles", "render_controllers", "attachables", "models", "fogs",
     "dialogue", "cameras", "block_culling",
 }

@@ -47,6 +47,11 @@ class Options:
         # flatten deeper. Handy for textures and models.
         self.keep_structure_dirs = set(settings.get("keepStructureDirs", []))
         self.category_dirs = set(settings.get("categoryDirs", ["textures", "models"]))
+        # Pack-relative path prefixes to leave completely untouched -- for assets
+        # referenced dynamically in scripts (e.g. "textures/.../spells/" + id),
+        # which no text rewriter can follow. Files under these keep their names,
+        # so the runtime-built reference still resolves.
+        self.keep_paths = [p.strip("/") for p in settings.get("keepPaths", [])]
 
     @classmethod
     def _pass_key(cls, name):

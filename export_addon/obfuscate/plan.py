@@ -209,6 +209,9 @@ class Plan:
                 base = rel.rsplit("/", 1)[-1]
                 if base in FIXED_BASENAMES:
                     continue
+                # dynamically-referenced assets: keep name so runtime-built refs resolve
+                if any(rel.startswith(kp) for kp in opt.keep_paths):
+                    continue
 
                 # textures ------------------------------------------------
                 if opt.renameTextures and top == "textures":
@@ -235,11 +238,11 @@ class Plan:
 
                 # structures ---------------------------------------------
                 if opt.renameStructures and top == "structures" and rel.endswith(".mcstructure"):
-                    # A structure's identifier is derived from its path
-                    # (structures/<ns>/... -> <ns>:...). Keep the full folder
-                    # normally; when flattening, keep at least the namespace
-                    # folder so the identifier stays valid.
-                    old_id = self._structure_identifier(rel)
+                    # Structures are referenced by their path under structures/
+                    # (no extension) in two forms: "ns/sub/..." (jigsaw
+                    # template-pool `location`) and "ns:sub/..." (features,
+                    # /structure). Keep the namespace folder so both stay valid,
+                    # and map both forms so every reference is rewritten.
                     if opt.flatten:
                         parts = rel.split("/")
                         bucket = "structures/" + parts[1] if len(parts) > 2 else "structures"
@@ -247,8 +250,12 @@ class Plan:
                         bucket = self._bucket(rel)
                     new_rel = self._new_rel(kind, bucket, rel, ".mcstructure")
                     self.paths[kind][rel] = new_rel
-                    if old_id:
-                        self.structure_id[old_id] = self._structure_identifier(new_rel)
+                    old_body = rel[len("structures/"):-len(".mcstructure")]
+                    new_body = new_rel[len("structures/"):-len(".mcstructure")]
+                    if "/" in old_body and "/" in new_body:
+                        self.structure_id[old_body] = new_body                    # ns/sub (jigsaw)
+                        self.structure_id[old_body.replace("/", ":", 1)] = \
+                            new_body.replace("/", ":", 1)                         # ns:sub (features)
                     continue
 
                 # loot tables --------------------------------------------
@@ -286,15 +293,6 @@ class Plan:
                 self.tex_noext[kind][base_noext] = new_noext
             self.paths[kind][ts_rel] = new_noext + suffix
 
-    @staticmethod
-    def _structure_identifier(rel):
-        # structures/<ns>/<a>/<b>.mcstructure -> <ns>:<a>/<b>
-        body = rel[len("structures/"):-len(".mcstructure")]
-        if "/" not in body:
-            return None
-        ns, sub = body.split("/", 1)
-        return ns + ":" + sub
-
     # -- compiled replacers -------------------------------------------------
 
     def _compile(self):
@@ -309,13 +307,16 @@ class Plan:
         if self.structure_id:
             self._id_replacers.append(
                 make_token_replacer(self.structure_id, idc + ":/", idc + "/"))
-        # per-pack path replacers (texture + sound paths with/without ext,
-        # plus loot paths -- all matched as whole path tokens)
-        self._path_replacers = {}
+        # Global path replacer (texture + sound paths with/without ext, plus loot
+        # paths -- matched as whole path tokens). It must span BOTH packs: a BP
+        # script or JSON commonly references an RP texture/sound path (e.g.
+        # server-ui form icons), so per-pack maps would miss those. Keys are
+        # unique across packs (textures/sounds live in RP, loot_tables in BP), so
+        # merging cannot collide.
         pathc = r"A-Za-z0-9_./"
+        pathmap = {}
         for kind, _ in self.packs:
-            reps = []
-            pathmap = dict(self.tex_noext[kind])       # "textures/x" -> "textures/y"
+            pathmap.update(self.tex_noext[kind])       # "textures/x" -> "textures/y"
             pathmap.update(self.sound_noext[kind])     # "sounds/x"   -> "sounds/y"
             for o, n in self.paths[kind].items():      # add the with-extension forms
                 top = top_segment(o)
@@ -325,9 +326,7 @@ class Plan:
                         pathmap[o] = n
                 elif top == "loot_tables":
                     pathmap[o] = n
-            if pathmap:
-                reps.append(make_token_replacer(pathmap, pathc, pathc))
-            self._path_replacers[kind] = reps
+        self._path_replacer = make_token_replacer(pathmap, pathc, pathc)
 
     # -- public: relocate + transform --------------------------------------
 
@@ -348,11 +347,10 @@ class Plan:
             if isinstance(obj, dict) and self._structural(kind, rel, obj):
                 text = json.dumps(obj, ensure_ascii=False, indent=2)
 
-        # textual identifier + path rewrites ------------------------------
+        # textual identifier + path rewrites (both global / cross-pack) ---
         for rep in self._id_replacers:
             text = rep(text)
-        for rep in self._path_replacers.get(kind, ()):
-            text = rep(text)
+        text = self._path_replacer(text)
 
         return text.encode("utf-8")
 

@@ -209,7 +209,7 @@ Each pass:
 > names. `renameSounds` renames only the `.ogg` **files** (their paths live only in
 > `sound_definitions.json`, never scripts), so it's reliable and stays on — sound
 > *event ids* are never touched.
-| `renameFiles` | content-loaded definition files (entities, blocks, items, recipes, models, particles, feature_rules, block_culling, …) get short random names + flattened | n/a — the game loads these by identifier, not path |
+| `renameFiles` | content-loaded definition files (entities, blocks, items, recipes, models, particles, attachables, render_controllers, block_culling, …) get short random names + flattened | n/a — the game loads these by identifier, not path. **`features`, `feature_rules`, `biomes` are excluded** — those registries require the filename to match the identifier. |
 | `renameTextures` | texture files + their texture_set (detected by content, incl. plain-`.json`) | `terrain_texture` / `item_texture` / `flipbook`, client entities, attachables, particles, and the texture_set's `color`/`mer`/`normal` |
 | `renameStructures` | `.mcstructure` files | the derived `ns:path` identifiers in features / functions / scripts |
 | `renameLootTables` | `loot_tables/*.json` | every `"loot_tables/…"` reference |
@@ -270,6 +270,10 @@ if any path exceeds the budget instead of just warning).
   or dependency ids (e.g. `textures/misc/enchanted_item_glint`,
   `loot_tables/entities/skeleton.json`, `animation.humanoid.*`) are left
   untouched. The build log reports how many external refs it skipped.
+- Renamed identifiers **keep the addon's namespace** (auto-detected from the
+  pack's ids, e.g. `cyd_ab`): `controller.animation.cyd_ab.<hash>`,
+  `geometry.cyd_ab_<hash>`. Ids without a namespace get one, so nothing collides
+  with vanilla or other packs.
 - Renames are **deterministic** (hash-based), so rebuilds are stable and diffs
   stay small.
 - Renaming also **shortens paths**, which helps stay under the 80-char limit.
